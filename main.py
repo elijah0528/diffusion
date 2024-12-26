@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
 
+
 from torchvision import transforms
 from datasets import load_dataset
 
@@ -16,7 +17,7 @@ from PIL import Image
 batch_size = 4
 resized_size = 64
 train_ratio = 0.8
-timesteps = 20000
+timesteps = 100001
 
 # Define data transform
 transform = transforms.Compose([
@@ -70,7 +71,13 @@ train_dataset, test_dataset = random_split(face_dataset, [train_size, test_size]
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
 
-def get_index_from_list()
+
+
+def get_index_from_list(batch_x, t):
+    if len(batch_x.shape) == 3:
+        batch_x.unsqueeze(0)
+    print(batch_x.shape)
+    return batch_x[:, t, :, :]
 
 def forward_sample(x_0, t, device='cpu'):
     noise = torch.randn_like(x_0)
@@ -92,6 +99,24 @@ posterior_variance = betas * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
 
 print(betas.shape)
 
+class SimpleUNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.image_channels = 3
+        self.down_channels = (64, 128, 256, 512)
+        self.up_channels = (512, 256, 128, 64)
+        self.out_dim = 3
+        self.time_emb_dim = 32
+
+
+
+
+    def forward(self):
+        pass
+
+
+
+
 
 
 noised_images = []
@@ -100,19 +125,15 @@ for batch in train_loader:
     print(batch.shape)
     for img in batch:
         print(img.max())
-        for iter in range(timesteps):
-            input = batch[0]
-            if iter == 0:
-                noised_images.append(input)
-            # Size [C x H x W]
-            noise = torch.randn_like(input)
-            input = input + noise * betas[iter]
-            if iter % 4000 == 0:
-                noised_images.append(input)
+        noised_images.append(forward_sample(img, 0))
+        noised_images.append(forward_sample(img, 100))
+        noised_images.append(forward_sample(img, 500))
+        noised_images.append(forward_sample(img, 1000))
+        noised_images.append(forward_sample(img, 50000))
 
         break
 
-    
+    '''
     num_images = min(5, len(noised_images))
     rows, cols = 1,5
     plt.figure(figsize=(2 * cols, 2 * rows))
@@ -125,6 +146,7 @@ for batch in train_loader:
 
     plt.tight_layout(pad=2.0)
     plt.show()
+    '''
     # Pytorch images are C x H x W
     # Numpy images are H x W x C
 

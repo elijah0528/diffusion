@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import Adam
 from torch.utils.data import DataLoader, random_split
 
 
@@ -18,8 +19,9 @@ from PIL import Image
 batch_size = 4
 resized_size = 128
 train_ratio = 0.8
-timesteps = 50000
+timesteps = 300
 dim_embeddings = 32 # Change to 32
+max_epochs = 64
 
 # Define data transform
 transform = transforms.Compose([
@@ -76,8 +78,9 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
 # Returns index for batches to
 def get_index_from_list(vals, t, x_shape):
     # x_shape of size (B, C, H, W)
+    b_size = t.shape[0]
     out = vals.gather(-1, t)
-    return out.reshape(batch_size, *((1, )  * (len(x_shape) - 1)))# new batch_x of size (B, 1, H, W)
+    return out.reshape(b_size, *((1, )  * (len(x_shape) - 1)))# new batch_x of size (B, 1, H, W)
 
 
 # Gets diffused sample at an arbitrary timestep
@@ -99,7 +102,6 @@ alpha_reci_sqrt = torch.sqrt(1 / alphas)
 alpha_cumprod_prev = F.pad(alpha_cumprod[:-1], (1, 0), value=1.0)
 posterior_variance = betas * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
 
-print(betas.shape)
 
 
 class PositionalEmbeddings(nn.Module):
@@ -108,12 +110,13 @@ class PositionalEmbeddings(nn.Module):
         self.dim = dim
     def forward(self, t):
         half_dim = self.dim // 2
-        print(t)
         b = (torch.arange(100000) / 10000.).unsqueeze(1) # (pos_len, 1)
         e = torch.arange(half_dim) / self.dim
         e = e.unsqueeze(0) # (1, half_dim)
         embeddings = b ** e # (pos_len, half_dim)
         embeddings = torch.stack((embeddings.sin(), embeddings.cos()), dim=-1).flatten(start_dim=-2)
+        # (100000, dim)
+        embeddings = embeddings[t] 
         return embeddings
 
 class Block(nn.Module):
@@ -141,11 +144,7 @@ class Block(nn.Module):
         h = self.bnorm1(self.relu(self.conv1(x)))
 
         time_emb = self.relu(self.time_mlp(t)) # Time embedding is of shape (out_ch)
-        print(f"Expected shape of time_emb is (out_ch): {time_emb.shape}")
         time_emb = time_emb[(...,) + (None,) * 2]
-        print(f"Expected shape of time_emb is (out_ch [1] [1]): {time_emb.shape}")
-        print(f"H shape: {h.shape}")
-        print(f"time emb shape: {time_emb.shape}")
         h = h + time_emb
 
         h = self.bnorm2(self.relu(self.conv2(h)))
@@ -161,7 +160,6 @@ class SimpleUNet(nn.Module):
         self.up_channels = (1024, 512, 256, 128, 64)
         self.out_dim = 3
         self.time_emb_dim = 32
-
         self.time_mlp = nn.Sequential(
             PositionalEmbeddings(dim_embeddings),
             nn.Linear(dim_embeddings, dim_embeddings),
@@ -198,25 +196,77 @@ class SimpleUNet(nn.Module):
         return self.output(x)
 
 model = SimpleUNet()
+optimizer = Adam(model.parameters(), lr=0.001)
 
 def get_loss(model, x_0, t):
     x_noisy, noise = forward_sample(x_0, t)
     noise_pred = model(x_noisy, t)
-    print(f"Noise shape{noise.shape}")
-    print(f"Predicated noise shape{noise_pred.shape}")
-
     return F.l1_loss(noise, noise_pred)
 
+@torch.no_grad()
+def sample_timestep(x, t):
+    """
+    Calls the model to predict the noise in the image and returns 
+    the denoised image. 
+    Applies noise to this image, if we are not in the last step yet.
+    """
+    betas_t = get_index_from_list(betas, t, x.shape)
+    sqrt_one_minus_alphas_cumprod_t = get_index_from_list(
+        sqrt_one_minus_alphas_cumprod, t, x.shape
+    )
+    sqrt_recip_alphas_t = get_index_from_list(alpha_reci_sqrt, t, x.shape)
+    
+    # Call model (current image - noise prediction)
+    model_mean = sqrt_recip_alphas_t * (
+        x - betas_t * model(x, t) / sqrt_one_minus_alphas_cumprod_t
+    )
+    posterior_variance_t = get_index_from_list(posterior_variance, t, x.shape)
+    
+    if t == 0:
+
+        return model_mean
+    else:
+        noise = torch.randn_like(x)
+        return model_mean + torch.sqrt(posterior_variance_t) * noise 
+
+
+@torch.no_grad()
+def sample_plot_image():
+    # Sample noise
+    img_size = 128
+    img = torch.randn((1, 3, img_size, img_size))
+    plt.figure(figsize=(15,15))
+    plt.axis('off')
+    num_images = 10
+    stepsize = int(timesteps/num_images)
+
+    for i in range(0,timesteps)[::-1]:
+        t = torch.full((1,), i, dtype=torch.long)
+        img = sample_timestep(img, t)
+        # Edit: This is to maintain the natural range of the distribution
+        img = torch.clamp(img, -1.0, 1.0)
+        if i % stepsize == 0:
+            plt.subplot(1, num_images, int(i/stepsize)+1)
+            show_tensor_image(img.detach().cpu())
+    plt.show()   
 
 noised_images = []
-for batch in train_loader:
-    print(batch.shape)
-    t = torch.randint(0, timesteps, (batch_size, )).long()
-    loss = get_loss(model, batch, t)
-    print(loss)
-    break
+for iter in range(max_epochs):
+    for step, batch in enumerate(train_loader):
+        if step >= 100:  # Stop after 100 batches
+            break
+        optimizer.zero_grad()
 
-    # Pytorch images are C x H x W
-    # Numpy images are H x W x C
+        t = torch.randint(0, timesteps, (batch_size, )).long()
+        loss = get_loss(model, batch, t)      
+        loss.backward()
+        optimizer.step()
+        print(step, loss)
+        if step % 5 == 0:
+            print(f"Step {step} | step {step:03d} Loss: {loss.item()} ")
+            sample_plot_image()
+
+        # Pytorch images are C x H x W
+        # Numpy images are H x W x C
 
     break

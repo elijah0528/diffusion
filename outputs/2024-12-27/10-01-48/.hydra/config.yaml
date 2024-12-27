@@ -1,0 +1,15 @@
+device: auto
+num_workers: 4
+data_config:
+  train_ratio: 0.8
+  truncate: 0.05
+  resized_image_size: 128
+trainer_config:
+  batch_size: 4
+  timesteps: 300
+  dim_embeddings: 64
+  max_epochs: 64
+  snapshot_path: null
+optimizer_config:
+  weight_decay: 0.1
+  learning_rate: 0.001

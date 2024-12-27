@@ -11,10 +11,15 @@ from datasets import load_dataset
 import math
 import numpy as np
 import matplotlib.pyplot as plt
-
-
 from PIL import Image
+import os
 
+import hydra
+from omegaconf import DictConfig
+from collections import defaultdict
+
+from model import PositionalEmbeddings, Block, SimpleUNet
+from utils import _get_index_from_list
 # Constants
 batch_size = 4
 resized_size = 128
@@ -78,136 +83,114 @@ train_dataset, test_dataset = random_split(face_dataset, [train_size, test_size]
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
 
-# Returns index for batches to
-def get_index_from_list(vals, t, x_shape):
-    # x_shape of size (B, C, H, W)
-    b_size = t.shape[0]
-    out = vals.gather(-1, t.cpu())
-    return out.reshape(b_size, *((1, )  * (len(x_shape) - 1))).to(t.device) # new batch_x of size (B, 1, H, W)
+class Trainer:
+    # Betas is [steps]
+    betas = None
+    alphas = None
+    alpha_cumprod = None
+    alpha_sqrt_cumprod = None
+    sqrt_one_minus_alphas_cumprod = None
+    alpha_reci_sqrt = None
+    alpha_cumprod_prev = None
+    posterior_variance = None
 
+    @classmethod
+    def initialize(cls, timesteps):
+        if not cls.initialized:
+            # Betas is [steps]
+            cls.betas = torch.linspace(0.0001, 0.02, steps=timesteps) # Scheduler from paper
+            cls.alphas = 1 - cls.betas # Creating a new variable for simplication
+            cls.alpha_cumprod = torch.cumprod(cls.alphas, axis=0) # For Forward diffusion thanks to reparameterization trick
+            cls.alpha_sqrt_cumprod = torch.sqrt(cls.alpha_cumprod) # For Forward diffusion thanks to reparameterization trick
+            cls.sqrt_one_minus_alphas_cumprod = torch.sqrt(1 - cls.alpha_cumprod) # For Forward diffusion thanks to reparameterization trick
+            
+            cls.alpha_reci_sqrt = torch.sqrt(1 / cls.alphas) # Used in sampling
+            cls.alpha_cumprod_prev = F.pad(cls.alpha_cumprod[:-1], (1, 0), value=1.0) # Used in sampling
+            cls.posterior_variance = cls.betas * (1. - cls.alpha_cumprod_prev) / (1. - cls.alpha_cumprod) # Used in sampling
+            
+            cls.initialized = True
 
-# Gets diffused sample at an arbitrary timestep
-def forward_sample(x_0, t, device='cpu'):
-    noise = torch.randn_like(x_0).to(device)
-    sqrt_one_minus_alphas_cumprod_t = get_index_from_list(sqrt_one_minus_alphas_cumprod, t, x_0.shape)
-    alpha_sqrt_cumprod_t = get_index_from_list(alpha_sqrt_cumprod, t, x_0.shape)
-    return alpha_sqrt_cumprod_t.to(device) * x_0.to(device) + sqrt_one_minus_alphas_cumprod_t.to(device) * noise.to(device), noise.to(device)
-
-
-# Betas is [steps]
-betas = torch.linspace(0.0001, 0.02, steps=timesteps) # Scheduler from paper
-alphas = 1 - betas # Creating a new variable for simplication
-alpha_cumprod = torch.cumprod(alphas, axis=0) # For Forward diffusion thanks to reparameterization trick
-alpha_sqrt_cumprod = torch.sqrt(alpha_cumprod) # For Forward diffusion thanks to reparameterization trick
-sqrt_one_minus_alphas_cumprod = torch.sqrt(1 - alpha_cumprod) # For Forward diffusion thanks to reparameterization trick
-
-
-alpha_reci_sqrt = torch.sqrt(1 / alphas) # Used in sampling
-alpha_cumprod_prev = F.pad(alpha_cumprod[:-1], (1, 0), value=1.0) # Used in sampling
-posterior_variance = betas * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod) # Used in sampling
-
-
-class PositionalEmbeddings(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-    def forward(self, t):
-        device = t.device
-        half_dim = self.dim // 2
-        pos_len = min(t.max(), timesteps)
-        b = (torch.arange(pos_len + 1, device=device) / 10000.).unsqueeze(1) # (pos_len, 1)
-        e = torch.arange(half_dim, device=device) / self.dim
-        e = e.unsqueeze(0) # (1, half_dim)
-        embeddings = b ** e # (pos_len, half_dim)
-        embeddings = torch.stack((embeddings.sin(), embeddings.cos()), dim=-1).flatten(start_dim=-2)
-        embeddings = embeddings[t] 
-        return embeddings
-
-class Block(nn.Module):
-    def __init__(self, in_ch, out_ch, time_emb_dim, up=False):
-        super().__init__()
-        self.in_ch = in_ch
-        self.out_ch = out_ch
-        self.time_mlp =  nn.Linear(time_emb_dim, out_ch)
-        self.up = up
-
-        if up:
-            self.conv1 = nn.Conv2d(2 * self.in_ch, self.out_ch, 3, padding=1)
-            self.transform = nn.ConvTranspose2d(self.out_ch, self.out_ch, 4, 2, 1)
+    def __init__(self, trainer_cfg: DictConfig, optim_cfg: DictConfig, compute_cfg: DictConfig, model):
+        self.compute_cfg = compute_cfg
+        if self.compute_cfg.device == "auto":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available else "cpu")
         else:
-            self.conv1 = nn.Conv2d(self.in_ch, self.out_ch, 3, padding=1)
-            self.transform = nn.Conv2d(self.out_ch, self.out_ch, 4, 2, 1)
+            self.device = self.compute_cfg.device 
 
-        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
-        self.bnorm1 = nn.BatchNorm2d(out_ch)
-        self.bnorm2 = nn.BatchNorm2d(out_ch)
+        self.trainer_cfg = trainer_cfg
+        self.optim_cfg = optim_cfg
+        self.model = model.to(self.device)
+        self.optimizer = None
+        self.callbacks = defaultdict(list)
 
-        self.relu = nn.ReLU()
+        self.batch_size = self.trainer_cfg.batch_size
+        self.timesteps = self.trainer_cfg.timesteps
+        self.dim_embeddings = self.trainer_cfg.dim_embeddings
+        self.max_epochs = self.trainer_cfg.max_epochs
+        self.snapshot_path = self.trainer_cfg.snapshot_path
+        self.checkpoint_interval = self.trainer_cfg.checkpoint_interval
 
-    def forward(self, x, t):
-        h = self.bnorm1(self.relu(self.conv1(x)))
+        self.weight_decay = self.optim_cfg.weight_decay
+        self.learning_rate = self.optim_cfg.learning_rate
 
-        time_emb = self.relu(self.time_mlp(t)) # Time embedding is of shape (out_ch)
-        time_emb = time_emb[(...,) + (None,) * 2]
-        h = h + time_emb
+        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
-        h = self.bnorm2(self.relu(self.conv2(h)))
 
-        return self.transform(h)
+    def train(self, train_loader):
+        max_steps = len(train_loader)
+        for iter in range(self.max_epochs):
+            for step, batch in enumerate(train_loader):
+                if len(batch) != batch_size:
+                    continue
+                
+                batch = batch.to(self.device)
+                self.optimizer.zero_grad()
+                t = torch.randint(0, self.timesteps, (self.batch_size, ), device=self.device).long()
+                loss = self.get_loss(self.model, batch, t)      
+                loss.backward()
+                self.optimizer.step()
+
+                if step % self.checkpoint_interval == 0 and step != 0:
+                    self.checkpoint(iter, step, max_steps, loss)
     
+    # Gets diffused sample at an arbitrary timestep
+    def forward_sample(self, x_0, t):
+        noise = torch.randn_like(x_0).to(self.device)
+        sqrt_one_minus_alphas_cumprod_t = _get_index_from_list(Trainer.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
+        alpha_sqrt_cumprod_t = _get_index_from_list(Trainer.alpha_sqrt_cumprod, t, x_0.shape)
+        # Everything in the return is sent to device
+        return alpha_sqrt_cumprod_t.to(self.device) * x_0.to(self.device) + sqrt_one_minus_alphas_cumprod_t.to(self.device) * noise.to(self.device), noise.to(self.device)
 
-class SimpleUNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.image_channels = 3
-        self.down_channels = (64, 128, 256, 512, 1024)
-        self.up_channels = (1024, 512, 256, 128, 64)
-        self.out_dim = 3
-        self.time_emb_dim = 32
-        self.time_mlp = nn.Sequential(
-            PositionalEmbeddings(dim_embeddings),
-            nn.Linear(dim_embeddings, dim_embeddings),
-            nn.ReLU(),
-        )
+    def get_loss(self, model, x_0, t):
+        x_0 = x_0.to(device)
+        t = t.to(device)
+        x_noisy, noise = self.forward_sample(x_0, t) # x_noisy and x_noise are already on device
+        noise_pred = model(x_noisy, t)
+        return F.l1_loss(noise, noise_pred)
+            
+    def checkpoint(self, iter, step, max_steps, loss):
+        print(f"Epoch {iter} / {self.max_epochs} | step {step:03d} / {len(train_loader)} Loss: {loss.item():4f} ")
 
-        self.conv0 = nn.Conv2d(self.image_channels, self.down_channels[0], 3, padding=1)
-        
-        self.downs = nn.ModuleList([
-            Block(self.down_channels[i], self.down_channels[i + 1], self.time_emb_dim) for i in range(len(self.down_channels) - 1)
-        ])
-        self.ups = nn.ModuleList([
-            Block(self.up_channels[i], self.up_channels[i + 1], self.time_emb_dim, up=True) for i in range(len(self.up_channels) - 1)
-        ])
+@hydra.main(config_path=".", config_name="ddpm-config", version_base="1.3")
+def main(cfg: DictConfig):
 
-        self.output = nn.Conv2d(self.up_channels[-1], self.out_dim, 1)
+    model = SimpleUNet()
 
-    def forward(self, x, timestep):
-        t = self.time_mlp(timestep) # (dim_embeddings)
-        
-        x = self.conv0(x)
+    data_cfg = cfg['data_cfg']
+    trainer_cfg = cfg['trainer_cfg']
+    optim_cfg = cfg['optimizer_cfg']
+    compute_cfg = cfg['compute_cfg']
 
-        residuals = []
-        for down in self.downs:
-            x = down(x, t)
-            residuals.append(x)
 
-        for up in self.ups:
-            residual_x = residuals.pop()
-            x = torch.cat((x, residual_x), dim=1)
-            x = up(x, t)
+    print(trainer_cfg)
+    trainer = Trainer(trainer_cfg, optim_cfg, compute_cfg, model)
+    trainer.train(train_loader)
+    print(trainer.batch_size)
 
-        
-        return self.output(x)
+if __name__ == "__main__":
+    main()
 
-model = SimpleUNet().to(device)
-optimizer = Adam(model.parameters(), lr=0.001)
-
-def get_loss(model, x_0, t):
-    x_0 = x_0.to(device)
-    t = t.to(device)
-    x_noisy, noise = forward_sample(x_0, t, device)
-    noise_pred = model(x_noisy, t)
-    return F.l1_loss(noise, noise_pred)
+exit(0)
 
 @torch.no_grad()
 def sample_timestep(x, t):
@@ -256,26 +239,3 @@ def sample_plot_image():
             show_tensor_image(img.detach().cpu())
     plt.show()   
 
-noised_images = []
-for iter in range(max_epochs):
-    for step, batch in enumerate(train_loader):
-        if step >= 500: 
-            break
-        batch = batch.to(device)
-
-        optimizer.zero_grad()
-        t = torch.randint(0, timesteps, (batch_size, ), device=device).long()
-        loss = get_loss(model, batch, t)      
-        loss.backward()
-        optimizer.step()
-        print(step, loss)
-        if step % 5 == 0 and step != 0:
-            print(f"Step {step} | step {step:03d} Loss: {loss.item()} ")
-    
-    sample_plot_image()
-    sample_plot_image()
-    sample_plot_image()
-    sample_plot_image()
-    sample_plot_image()
-
-    break

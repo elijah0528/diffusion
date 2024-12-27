@@ -23,21 +23,19 @@ from trainer import Trainer
 from data import Data
 from utils import FaceDataset, _get_index_from_list
 
-resized_size = 128
-
 @hydra.main(config_path=".", config_name="ddpm-config", version_base="1.3")
 def main(cfg: DictConfig):
-
-    model = SimpleUNet()
-
+    main_cfg = cfg
     data_cfg = cfg['data_cfg']
     trainer_cfg = cfg['trainer_cfg']
     optim_cfg = cfg['optimizer_cfg']
     compute_cfg = cfg['compute_cfg']
     
+    model = SimpleUNet(trainer_cfg)
+
     d = Data(data_cfg, trainer_cfg)
     train_loader, test_loader = d.process_data()
-    trainer = Trainer(trainer_cfg, optim_cfg, compute_cfg, data_cfg, model)
+    trainer = Trainer(main_cfg, trainer_cfg, optim_cfg, compute_cfg, data_cfg, model)
     trainer.train(train_loader)
     print(trainer.batch_size)
 

@@ -8,7 +8,7 @@ data_cfg:
 trainer_cfg:
   batch_size: 4
   timesteps: 300
-  dim_embeddings: 64
+  n_embed: 64
   max_epochs: 64
   checkpoint_interval: 25
   snapshot_path: null

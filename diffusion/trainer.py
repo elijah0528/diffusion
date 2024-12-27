@@ -3,8 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 from torch.utils.data import DataLoader, random_split
-
-
 from torchvision import transforms
 from datasets import load_dataset
 
@@ -18,10 +16,23 @@ import hydra
 from omegaconf import DictConfig
 from collections import defaultdict
 
-from model import PositionalEmbeddings, Block, SimpleUNet
-from utils import FaceDataset, _get_index_from_list
 
-resized_size = 128
+import wandb
+import random
+
+from utils import _get_index_from_list, _show_tensor_image
+
+
+
+def initialize_wandb(cfg: DictConfig):
+    # start a new wandb run to track this script
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="test-wandb-project",
+
+        # track hyperparameters and run metadata
+        config={"main_cfg": cfg}
+    )
 
 class Trainer:
     # Betas is [steps]
@@ -51,12 +62,14 @@ class Trainer:
             
             cls.initialized = True
 
-    def __init__(self, trainer_cfg: DictConfig, optim_cfg: DictConfig, compute_cfg: DictConfig, data_cfg: DictConfig, model):
+    def __init__(self, main_cfg: DictConfig, trainer_cfg: DictConfig, optim_cfg: DictConfig, compute_cfg: DictConfig, data_cfg: DictConfig, model):
         self.compute_cfg = compute_cfg
         if self.compute_cfg.device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available else "cpu")
         else:
             self.device = self.compute_cfg.device 
+
+        initialize_wandb(main_cfg)
 
         self.trainer_cfg = trainer_cfg
         self.optim_cfg = optim_cfg
@@ -68,7 +81,7 @@ class Trainer:
 
         self.batch_size = self.trainer_cfg.batch_size
         self.timesteps = self.trainer_cfg.timesteps
-        self.dim_embeddings = self.trainer_cfg.dim_embeddings
+        self.n_embed = self.trainer_cfg.n_embed
         self.max_epochs = self.trainer_cfg.max_epochs
         self.snapshot_path = self.trainer_cfg.snapshot_path
         self.checkpoint_interval = self.trainer_cfg.checkpoint_interval
@@ -114,7 +127,12 @@ class Trainer:
         return F.l1_loss(noise, noise_pred)
             
     def checkpoint(self, iter, step, max_steps, loss):
-        print(f"Epoch {iter + 1} / {self.max_epochs} | step {step} / {max_steps} Loss: {loss.item():4f} ")
+        # print(f"Epoch {iter + 1} / {self.max_epochs} | step {step} / {max_steps} Loss: {loss.item():4f} ")
+        wandb.log({"Epoch": iter + 1, "Step": step, "loss": loss.item()})
+        model_save_path = f"test-model-weights.pth"
+        torch.save(self.model.state_dict(), model_save_path)
+
+        wandb.save(model_save_path) 
 
     @torch.no_grad()
     def sample_timestep(self, x, t):
@@ -138,7 +156,7 @@ class Trainer:
     @torch.no_grad()
     def sample_plot_image(self):
 
-        img_size = resized_size
+        img_size = self.resized_image_size
         img = torch.randn((1, 3, img_size, img_size)).to(self.device)
         plt.figure(figsize=(15,15))
         plt.axis('off')

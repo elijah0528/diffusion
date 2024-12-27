@@ -3,8 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 from torch.utils.data import DataLoader, random_split
-
-
 from torchvision import transforms
 from datasets import load_dataset
 
@@ -18,12 +16,7 @@ import hydra
 from omegaconf import DictConfig
 from collections import defaultdict
 
-from model import PositionalEmbeddings, Block, SimpleUNet
-from utils import FaceDataset, _get_index_from_list
-
-resized_size = 128
-
-
+from utils import FaceDataset
 
 class Data:
 
@@ -58,21 +51,23 @@ class Data:
         image = reverse_transform(tensor)
         return image
     
-    # Convert a tensor to image and show it
-    def _show_tensor_image(self, image):
-        if len(image.shape) == 4:
-            image = image[0, :, :, :]
-        plt.imshow(self.reverse_transform(image))
-
     def process_data(self, dataset_path='tonyassi/celebrity-1000'):
         # Define dataset
         dataset = load_dataset(dataset_path, split='train')
         face_dataset = FaceDataset(dataset, Data.transform, self.resized_image_size)
 
-        # Get sizes to split train and test dataset
         dataset_size = len(face_dataset)
-        train_size = int(dataset_size * self.train_ratio)
-        test_size = dataset_size - train_size
+        if self.truncate != 1:
+            truncate_ratio = self.truncate 
+            
+            truncated_size = int(dataset_size * truncate_ratio) 
+
+            if truncated_size < dataset_size:
+                face_dataset = face_dataset.select(range(truncated_size))
+
+        truncated_dataset_size = len(face_dataset)
+        train_size = int(truncated_dataset_size * self.train_ratio)
+        test_size = truncated_dataset_size - train_size
         train_dataset, test_dataset = random_split(face_dataset, [train_size, test_size])
 
         # Load datasets

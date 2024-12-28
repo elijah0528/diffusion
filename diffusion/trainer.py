@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import os
+import threading
 
 import hydra
 from omegaconf import DictConfig
@@ -22,13 +23,15 @@ import random
 
 from utils import _get_index_from_list, _show_tensor_image
 
-
+import boto3
+from botocore.exceptions import ClientError
+import io
 
 def initialize_wandb(cfg: DictConfig):
     # start a new wandb run to track this script
     wandb.init(
         # set the wandb project where this run will be logged
-        project="test-wandb-project",
+        project="remote-diffusion-run-1",
 
         # track hyperparameters and run metadata
         config={"main_cfg": cfg}
@@ -116,7 +119,8 @@ class Trainer:
                 loss = self.get_loss(self.model, batch, t)      
                 loss.backward()
                 self.optimizer.step()
-                print(step, loss.item())
+                print(f"Epoch: {iter + 1} / {self.max_epochs}, Step: {step} / {max_steps}, Loss: {loss.item()}")
+
                 if step % self.checkpoint_interval == 0 and step != 0:
                     self.checkpoint(iter, step, max_steps, loss)
     
@@ -142,20 +146,19 @@ class Trainer:
 
     def get_random_sample(self):
         # Convert loaders to lists for random sampling
-        train_batches = list(self.train_loader)
-        test_batches = list(self.test_loader)
+        train_batch = next(iter(self.train_loader))
+        test_batch = next(iter(self.test_loader))
         
-        # Get random batches
-        train_batch = random.choice(train_batches).to(self.device)
-        test_batch = random.choice(test_batches).to(self.device)
+        return train_batch.to(self.device), test_batch.to(self.device)
 
-        return train_batch, test_batch
 
     def estimate_loss(self):
         train_losses = torch.zeros(self.loss_estimation_context).to(self.device)
         test_losses = torch.zeros(self.loss_estimation_context).to(self.device)
+    
         self.model.eval()
         for i in range(self.loss_estimation_context):
+
             with torch.no_grad():
                 t = torch.randint(0, self.timesteps, (self.batch_size, ), device=self.device).long()
                 train_samples, test_samples = self.get_random_sample()
@@ -178,8 +181,27 @@ class Trainer:
         print(f"Load weights: {self.load_weights}, learning_rate = {self.optimizer.param_groups[0]['lr']}")
         torch.save(self.model.state_dict(), self.snapshot_path)
         wandb.log({"Epoch": iter + 1, "Step": step, "Train loss": train_loss, "Test loss": test_loss})
-        wandb.save(self.snapshot_path) 
-
+        # wandb.save(self.snapshot_path) 
+        # Upload to S3
+        def upload_to_s3():
+            try:
+                s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id='',
+                    aws_secret_access_key='',
+                    region_name='us-east-1'
+                )
+                bucket_name = 'runpoddiffusionbucket'
+                s3_path = f'model_checkpoints/diffusion_model_weights.pth'
+                
+                s3_client.upload_file(self.snapshot_path, bucket_name, s3_path)
+                print(f"Successfully uploaded model to s3://{bucket_name}/{s3_path}")
+            except ClientError as e:
+                print(f"Failed to upload to S3: {e}")
+        # Start upload in background
+        thread = threading.Thread(target=upload_to_s3)
+        thread.start()   
+            
     @torch.no_grad()
     def sample_timestep(self, x, t):
         betas_t = _get_index_from_list(Trainer.betas, t, x.shape)

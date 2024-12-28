@@ -68,16 +68,17 @@ class Trainer:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available else "cpu")
         else:
             self.device = self.compute_cfg.device 
-
         initialize_wandb(main_cfg)
 
         self.trainer_cfg = trainer_cfg
         self.optim_cfg = optim_cfg
         self.data_cfg = data_cfg
 
+        self.weight_decay = self.optim_cfg.weight_decay
+        self.learning_rate = self.optim_cfg.learning_rate
+
         self.model = model.to(self.device)
-        self.model_save_path = "test-model-weights.pth"
-        self.optimizer = None
+        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         self.callbacks = defaultdict(list)
 
         self.batch_size = self.trainer_cfg.batch_size
@@ -87,24 +88,21 @@ class Trainer:
         self.snapshot_path = self.trainer_cfg.snapshot_path
         self.checkpoint_interval = self.trainer_cfg.checkpoint_interval
         self.loss_estimation_context = self.trainer_cfg.loss_estimation_context
-
-        self.weight_decay = self.optim_cfg.weight_decay
-        self.learning_rate = self.optim_cfg.learning_rate
+        self.load_weights = self.trainer_cfg.load_weights
 
         self.resized_image_size = self.data_cfg.resized_image_size
 
-        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         Trainer.initialize(self.timesteps)
 
         self.train_loader = None
         self.test_loader = None
     def load_pretrained_weights(self):
-        self.model.load_state_dict(torch.load(self.model_save_path, weights_only=True))
-        print("Loaded pretrained weights from", self.model_save_path)
+        self.model.load_state_dict(torch.load(self.snapshot_path, weights_only=True))
+        print("Loaded pretrained weights from", self.snapshot_path)
     def train(self, train_loader, test_loader):
         self.train_loader = train_loader
         self.test_loader = test_loader
-        if os.path.exists(self.model_save_path):
+        if os.path.exists(self.snapshot_path) and self.load_weights:
             self.load_pretrained_weights()
         max_steps = len(train_loader)
         for iter in range(self.max_epochs):
@@ -129,6 +127,9 @@ class Trainer:
         alpha_sqrt_cumprod_t = _get_index_from_list(Trainer.alpha_sqrt_cumprod, t, x_0.shape)
         if x_0.dim == 3:
             x_0 = x_0.unsqueeze(0)
+        if t.size(0) != x_0.size(0):
+            print(t.shape, x_0.shape)
+
         # Everything in the return is sent to device
         return alpha_sqrt_cumprod_t.to(self.device) * x_0.to(self.device) + sqrt_one_minus_alphas_cumprod_t.to(self.device) * noise.to(self.device), noise.to(self.device)
 
@@ -156,8 +157,12 @@ class Trainer:
         self.model.eval()
         for i in range(self.loss_estimation_context):
             with torch.no_grad():
-                t = torch.randint(0, self.timesteps, (self.batch_size,), device=self.device)
+                t = torch.randint(0, self.timesteps, (self.batch_size, ), device=self.device).long()
                 train_samples, test_samples = self.get_random_sample()
+
+                if len(train_samples) != self.batch_size or len(test_samples) != self.batch_size:
+                    continue
+                
                 train_loss = self.get_loss(self.model, train_samples, t)
                 test_loss = self.get_loss(self.model, test_samples, t)
                 train_losses[i] = train_loss
@@ -167,13 +172,13 @@ class Trainer:
 
 
     def checkpoint(self, iter, step, max_steps, loss):
-        # print(f"Epoch {iter + 1} / {self.max_epochs} | step {step} / {max_steps} Loss: {loss.item():4f} ")
-        wandb.log({"Epoch": iter + 1, "Step": step, "loss": loss.item()})
         train_loss, test_loss = self.estimate_loss()
-        print(f"Epoch: {iter + 1} / {self.max_epochs}, Step: {step} / {max_steps}, Loss: {loss.item}")
+        print(f"Epoch: {iter + 1} / {self.max_epochs}, Step: {step} / {max_steps}, Loss: {loss.item()}")
         print(f"Train loss: {train_loss :4f}, Test loss: {test_loss:4f}")
-        torch.save(self.model.state_dict(), self.model_save_path)
-        wandb.save(self.model_save_path) 
+        print(f"Load weights: {self.load_weights}, learning_rate = {self.optimizer.param_groups[0]['lr']}")
+        torch.save(self.model.state_dict(), self.snapshot_path)
+        wandb.log({"Epoch": iter + 1, "Step": step, "Train loss": train_loss, "Test loss": test_loss})
+        wandb.save(self.snapshot_path) 
 
     @torch.no_grad()
     def sample_timestep(self, x, t):

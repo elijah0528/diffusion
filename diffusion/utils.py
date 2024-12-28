@@ -23,11 +23,26 @@ def _get_index_from_list(vals, t, x_shape):
     out = vals.gather(-1, t.cpu())
     return out.reshape(b_size, *((1, )  * (len(x_shape) - 1))).to(t.device) # new batch_x of size (B, 1, H, W)
 
+
+# Reverse the same data transform
+reverse_transform = transforms.Compose([
+    transforms.Lambda(lambda x: ((x + 1) / 2)),
+    transforms.Lambda(lambda x: x.permute(1, 2, 0)),
+    transforms.Lambda(lambda x: x * 255.0),
+    transforms.Lambda(lambda x: torch.clamp(x, 0, 255)),
+    transforms.Lambda(lambda x: x.numpy().astype(np.uint8)),
+    transforms.ToPILImage(),
+])
+
+
 # Convert a tensor to image and show it
-def _show_tensor_image(self, image):
+def reverse_transform_image(image):
+    return reverse_transform(image)
+
+def _show_tensor_image(image):
     if len(image.shape) == 4:
         image = image[0, :, :, :]
-    plt.imshow(self.reverse_transform(image))
+    plt.imshow(reverse_transform_image(image))
 
 
 # Face dataset with custom operations

@@ -36,7 +36,7 @@ def main(cfg: DictConfig):
     d = Data(data_cfg, trainer_cfg)
     train_loader, test_loader = d.process_data()
     trainer = Trainer(main_cfg, trainer_cfg, optim_cfg, compute_cfg, data_cfg, model)
-    trainer.train(train_loader)
+    trainer.train(train_loader, test_loader)
     print(trainer.batch_size)
 
 

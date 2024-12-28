@@ -76,6 +76,7 @@ class Trainer:
         self.data_cfg = data_cfg
 
         self.model = model.to(self.device)
+        self.model_save_path = "test-model-weights.pth"
         self.optimizer = None
         self.callbacks = defaultdict(list)
 
@@ -85,6 +86,7 @@ class Trainer:
         self.max_epochs = self.trainer_cfg.max_epochs
         self.snapshot_path = self.trainer_cfg.snapshot_path
         self.checkpoint_interval = self.trainer_cfg.checkpoint_interval
+        self.loss_estimation_context = self.trainer_cfg.loss_estimation_context
 
         self.weight_decay = self.optim_cfg.weight_decay
         self.learning_rate = self.optim_cfg.learning_rate
@@ -94,7 +96,16 @@ class Trainer:
         self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         Trainer.initialize(self.timesteps)
 
-    def train(self, train_loader):
+        self.train_loader = None
+        self.test_loader = None
+    def load_pretrained_weights(self):
+        self.model.load_state_dict(torch.load(self.model_save_path, weights_only=True))
+        print("Loaded pretrained weights from", self.model_save_path)
+    def train(self, train_loader, test_loader):
+        self.train_loader = train_loader
+        self.test_loader = test_loader
+        if os.path.exists(self.model_save_path):
+            self.load_pretrained_weights()
         max_steps = len(train_loader)
         for iter in range(self.max_epochs):
             for step, batch in enumerate(train_loader):
@@ -116,6 +127,8 @@ class Trainer:
         noise = torch.randn_like(x_0).to(self.device)
         sqrt_one_minus_alphas_cumprod_t = _get_index_from_list(Trainer.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
         alpha_sqrt_cumprod_t = _get_index_from_list(Trainer.alpha_sqrt_cumprod, t, x_0.shape)
+        if x_0.dim == 3:
+            x_0 = x_0.unsqueeze(0)
         # Everything in the return is sent to device
         return alpha_sqrt_cumprod_t.to(self.device) * x_0.to(self.device) + sqrt_one_minus_alphas_cumprod_t.to(self.device) * noise.to(self.device), noise.to(self.device)
 
@@ -125,14 +138,42 @@ class Trainer:
         x_noisy, noise = self.forward_sample(x_0, t) # x_noisy and x_noise are already on device
         noise_pred = model(x_noisy, t)
         return F.l1_loss(noise, noise_pred)
-            
+
+    def get_random_sample(self):
+        # Convert loaders to lists for random sampling
+        train_batches = list(self.train_loader)
+        test_batches = list(self.test_loader)
+        
+        # Get random batches
+        train_batch = random.choice(train_batches).to(self.device)
+        test_batch = random.choice(test_batches).to(self.device)
+
+        return train_batch, test_batch
+
+    def estimate_loss(self):
+        train_losses = torch.zeros(self.loss_estimation_context).to(self.device)
+        test_losses = torch.zeros(self.loss_estimation_context).to(self.device)
+        self.model.eval()
+        for i in range(self.loss_estimation_context):
+            with torch.no_grad():
+                t = torch.randint(0, self.timesteps, (self.batch_size,), device=self.device)
+                train_samples, test_samples = self.get_random_sample()
+                train_loss = self.get_loss(self.model, train_samples, t)
+                test_loss = self.get_loss(self.model, test_samples, t)
+                train_losses[i] = train_loss
+                test_losses[i] = test_loss
+        self.model.train()
+        return train_losses.mean(), test_losses.mean()
+
+
     def checkpoint(self, iter, step, max_steps, loss):
         # print(f"Epoch {iter + 1} / {self.max_epochs} | step {step} / {max_steps} Loss: {loss.item():4f} ")
         wandb.log({"Epoch": iter + 1, "Step": step, "loss": loss.item()})
-        model_save_path = f"test-model-weights.pth"
-        torch.save(self.model.state_dict(), model_save_path)
-
-        wandb.save(model_save_path) 
+        train_loss, test_loss = self.estimate_loss()
+        print(f"Epoch: {iter + 1} / {self.max_epochs}, Step: {step} / {max_steps}, Loss: {loss.item}")
+        print(f"Train loss: {train_loss :4f}, Test loss: {test_loss:4f}")
+        torch.save(self.model.state_dict(), self.model_save_path)
+        wandb.save(self.model_save_path) 
 
     @torch.no_grad()
     def sample_timestep(self, x, t):

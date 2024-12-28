@@ -11,6 +11,7 @@ trainer_cfg:
   n_embed: 64
   max_epochs: 64
   checkpoint_interval: 25
+  loss_estimation_context: 10
   snapshot_path: null
 optimizer_cfg:
   weight_decay: 0.1

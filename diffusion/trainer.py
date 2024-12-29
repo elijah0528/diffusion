@@ -17,7 +17,6 @@ import hydra
 from omegaconf import DictConfig
 from collections import defaultdict
 
-
 import wandb
 import random
 
@@ -26,6 +25,10 @@ from utils import _get_index_from_list, _show_tensor_image
 import boto3
 from botocore.exceptions import ClientError
 import io
+from dotenv import load_dotenv
+
+load_dotenv()
+torch.manual_seed(42)
 
 def initialize_wandb(cfg: DictConfig):
     # start a new wandb run to track this script
@@ -81,7 +84,7 @@ class Trainer:
         self.learning_rate = self.optim_cfg.learning_rate
 
         self.model = model.to(self.device)
-        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
         self.callbacks = defaultdict(list)
 
         self.batch_size = self.trainer_cfg.batch_size
@@ -182,13 +185,12 @@ class Trainer:
         torch.save(self.model.state_dict(), self.snapshot_path)
         wandb.log({"Epoch": iter + 1, "Step": step, "Train loss": train_loss, "Test loss": test_loss})
         # wandb.save(self.snapshot_path) 
-        # Upload to S3
         def upload_to_s3():
             try:
                 s3_client = boto3.client(
                     's3',
-                    aws_access_key_id='',
-                    aws_secret_access_key='',
+                    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
                     region_name='us-east-1'
                 )
                 bucket_name = 'runpoddiffusionbucket'

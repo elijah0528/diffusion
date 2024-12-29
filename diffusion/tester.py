@@ -82,9 +82,6 @@ class Tester:
         self.model.load_state_dict(torch.load(self.snapshot_path, weights_only=True))
         print("Loaded pretrained weights from", self.snapshot_path)
 
-
-    def save_image_to_folder(self):
-        reverse_transform_image(img)
     @torch.no_grad()
     def _sample_timestep(self, x, t):
         betas_t = _get_index_from_list(Tester.betas, t, x.shape)

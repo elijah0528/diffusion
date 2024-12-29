@@ -25,6 +25,7 @@ from utils import FaceDataset, _get_index_from_list
 
 @hydra.main(config_path=".", config_name="ddpm-config", version_base="1.3")
 def main(cfg: DictConfig):
+    torch.manual_seed(42)
     main_cfg = cfg
     data_cfg = cfg['data_cfg']
     trainer_cfg = cfg['trainer_cfg']

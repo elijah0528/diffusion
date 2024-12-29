@@ -201,8 +201,8 @@ class Trainer:
             except ClientError as e:
                 print(f"Failed to upload to S3: {e}")
         # Start upload in background
-        thread = threading.Thread(target=upload_to_s3)
-        thread.start()   
+        # thread = threading.Thread(target=upload_to_s3)
+        # thread.start()   
             
     @torch.no_grad()
     def sample_timestep(self, x, t):

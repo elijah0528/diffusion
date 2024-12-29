@@ -1,4 +1,4 @@
-resized_image_size: 128
+resized_image_size: 64
 device: "auto"
 compute_cfg:
   device: auto
@@ -6,16 +6,16 @@ compute_cfg:
 data_cfg:
   train_ratio: 0.8
   truncate: 0.05
-  resized_image_size: 128
+  resized_image_size: 64
 trainer_cfg:
-  batch_size: 8
-  timesteps: 300
+  batch_size: 64
+  timesteps: 1000
   n_embed: 32
   max_epochs: 64
-  checkpoint_interval: 25
+  checkpoint_interval: 10
   loss_estimation_context: 10
   snapshot_path: "test-model-weights.pth"
-  load_weights: False
+  load_weights: Load
 optimizer_cfg:
   weight_decay: 0.1
-  learning_rate: 0.001
+  learning_rate: 0.00002

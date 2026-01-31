@@ -1,5 +1,5 @@
 ## Diffusion Implementation
-This repo implments a diffusion model trained on the CelebA dataset. The model architecture can be found here: https://arxiv.org/abs/2006.11239.
+This repo implements a diffusion model trained on the CelebA dataset. The model architecture can be found here: https://arxiv.org/abs/2006.11239.
 
 ## Hello World: Forward Diffusion Demo
 The quickest way to see diffusion in action is to run the forward noising demo:

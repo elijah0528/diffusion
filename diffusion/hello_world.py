@@ -14,6 +14,7 @@ https://arxiv.org/abs/2006.11239
 
 import torch
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from datasets import load_dataset
@@ -104,11 +105,10 @@ def load_sample_image():
     """Load a single sample image from the celebrity dataset."""
     print("Loading sample celebrity image from HuggingFace...")
     
-    # Load just enough of the dataset to get one image
-    dataset = load_dataset('tonyassi/celebrity-1000', split='train')
-    
-    # Get the first image
-    image = dataset[0]['image']
+    # Stream just the first example to keep this demo fast
+    dataset = load_dataset('tonyassi/celebrity-1000', split='train', streaming=True)
+    example = next(iter(dataset))
+    image = example['image']
     
     # Transform: resize, to tensor, normalize to [-1, 1]
     transform = transforms.Compose([
@@ -138,6 +138,28 @@ def tensor_to_image(tensor):
     img = img.permute(1, 2, 0).numpy()
     
     return img
+
+
+def is_non_interactive_backend():
+    """Return True if Matplotlib backend can't display windows."""
+    backend = matplotlib.get_backend().lower()
+    try:
+        from matplotlib.backends import backend_registry, BackendFilter
+        non_interactive = {
+            bk.lower()
+            for bk in backend_registry.list_builtin(BackendFilter.NON_INTERACTIVE)
+        }
+    except Exception:
+        non_interactive = {
+            "agg",
+            "cairo",
+            "pdf",
+            "pgf",
+            "ps",
+            "svg",
+            "template",
+        }
+    return backend in non_interactive
 
 
 # ============================================
@@ -202,7 +224,10 @@ def main():
     print(f"✓ Saved visualization to: {output_path}")
     
     # Show the plot
-    plt.show()
+    if is_non_interactive_backend():
+        print(f"ℹ️  Skipping plt.show() (non-interactive backend: {matplotlib.get_backend()})")
+    else:
+        plt.show()
     
     # Educational summary
     print()

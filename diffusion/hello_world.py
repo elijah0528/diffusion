@@ -12,14 +12,12 @@ Based on: "Denoising Diffusion Probabilistic Models" (Ho et al., 2020)
 https://arxiv.org/abs/2006.11239
 """
 
+import os
 import torch
-import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from datasets import load_dataset
-from PIL import Image
-import os
 
 # ============================================
 # CONSTANTS (matching ddpm-config.yaml defaults)
@@ -30,7 +28,7 @@ BETA_START = 0.0001
 BETA_END = 0.02
 
 # Timesteps to visualize
-DEMO_TIMESTEPS = [0, 100, 200, 400, 600, 800, 999]
+DEMO_TIMESTEPS = [0, 100, 200, 400, 600, 800, TIMESTEPS - 1]
 
 
 # ============================================
